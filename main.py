@@ -21,6 +21,7 @@ def create_chapar_module():
     # Store environments internally
     environments = {}
     set_environments = {}
+    print_outputs = []
 
     # Environment variable methods
     def get_env(name):
@@ -30,14 +31,16 @@ def create_chapar_module():
     def set_env(name, value):
         set_environments[name] = value
 
-    def log(message):
-        print(f"CHAPAR_LOG: {message}")
+    def custom_print(*args, **kwargs):
+        message = ' '.join(str(arg) for arg in args)
+        print_outputs.append(message)
 
     # Assign methods to the module
     chapar_module.get_env = get_env
     chapar_module.set_env = set_env
-    chapar_module.log = log
+    chapar_module.custom_print = custom_print
     chapar_module.on_response = None
+    chapar_module.print_outputs = print_outputs
     chapar_module._environments = environments
     chapar_module._set_environments = set_environments
 
@@ -56,44 +59,7 @@ def health_check():
     return jsonify({"status": "ok"})
 
 
-@app.route("/execute-pre-request", methods=["POST"])
-def execute_pre_request():
-    try:
-        data = request.json
-        script = data.get("script", "")
-        request_data = data.get("requestData", {})
-        environments = data.get("environments", {})
-
-        # Update chapar module environments
-        chapar._environments.clear()
-        chapar._set_environments.clear()
-        chapar._environments.update(environments)
-
-        # Prepare execution environment
-        globals_dict = {
-            "__builtins__": __builtins__,
-            "chapar": chapar  # Make chapar available in globals
-        }
-
-        locals_dict = {
-            "request": request_data,
-            "chapar": chapar,  # Also make it available in locals
-            "print": print
-        }
-
-        # Now execute the actual script
-        exec(script, globals_dict, locals_dict)
-
-        # Return the potentially modified data
-        return jsonify({
-            "requestData": locals_dict["request"],
-            "set_environments": chapar._set_environments
-        })
-    except Exception as e:
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 400
-
-
-@app.route("/execute-post-response", methods=["POST"])
+@app.route("/execute", methods=["POST"])
 def execute_post_response():
     try:
         data = request.json
@@ -105,6 +71,7 @@ def execute_post_response():
         # Update chapar module environments
         chapar._environments.clear()
         chapar._set_environments.clear()
+        chapar.print_outputs.clear()
         chapar._environments.update(environments)
 
         # Create response object
@@ -115,17 +82,32 @@ def execute_post_response():
             "json": lambda self=None: json.loads(response_data.get("body", "{}")),
         })()
 
+        # create request object
+        request_obj = type("RequestObject", (), {
+            "method": request_data.get("method", "GET"),
+            "url": request_data.get("url", ""),
+            "headers": request_data.get("headers", {}),
+            "metadata": request_data.get("metadata", {}),
+            "params": request_data.get("params", {}),
+            "query": request_data.get("query", {}),
+            "trailers": request_data.get("trailers", {}),
+            "data": request_data.get("data", {}),
+            "json": lambda self=None: request_data.get("json", {}),
+        })()
+
         # Prepare execution environment
         globals_dict = {
             "__builtins__": __builtins__,
-            "chapar": chapar  # Make chapar available in globals
+            "chapar": chapar,  # Make chapar available in globals
+            "print": chapar.custom_print,
+            "request": request_obj,
         }
 
         locals_dict = {
-            "request": request_data,
+            "request": request_obj,
             "response": response_obj,
             "chapar": chapar,  # Also make it available in locals
-            "print": print
+            "print": chapar.custom_print
         }
 
         # Reset any callbacks
@@ -142,7 +124,10 @@ def execute_post_response():
         return jsonify({
             "environments": chapar._environments,
             "set_environments": chapar._set_environments,
+            "prints": chapar.print_outputs,
         })
+
+
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 400
 
