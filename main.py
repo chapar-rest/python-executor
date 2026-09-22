@@ -1,147 +1,97 @@
 #!/usr/bin/env python3
-import types
-import sys
-import json
+"""HTTP front of the Chapar python executor.
+
+POST /v2/execute runs a pre- or post-request script (see README.md for the
+contract). POST /execute is the original API, kept for older Chapar builds.
+"""
 import argparse
-import traceback
-from flask import Flask, request, jsonify
+import hmac
 import os
 
-def create_chapar_module():
-    """
-    Dynamically create the chapar module with full implementation
-    """
-    # Create a new module object
-    chapar_module = types.ModuleType('chapar')
-    chapar_module.__file__ = '<dynamic>'
-    chapar_module.__doc__ = """
-    chapar module - Interface for interacting with the Chapar application
-    """
+from flask import Flask, jsonify, request
 
-    # Store environments internally
-    environments = {}
-    set_environments = {}
-    print_outputs = []
+import engine
 
-    # Environment variable methods
-    def get_env(name):
-        value = environments.get(name)
-        return value
+VERSION = "0.3.0"
+API_VERSIONS = [1, 2]
+TOKEN_HEADER = "X-Chapar-Token"
 
-    def set_env(name, value):
-        set_environments[name] = value
-
-    def custom_print(*args, **kwargs):
-        message = ' '.join(str(arg) for arg in args)
-        print_outputs.append(message)
-
-    # Assign methods to the module
-    chapar_module.get_env = get_env
-    chapar_module.set_env = set_env
-    chapar_module.custom_print = custom_print
-    chapar_module.on_response = None
-    chapar_module.print_outputs = print_outputs
-    chapar_module._environments = environments
-    chapar_module._set_environments = set_environments
-
-    # Register the module in sys.modules
-    sys.modules['chapar'] = chapar_module
-    return chapar_module
-
-
-# Create the chapar module
-chapar = create_chapar_module()
 app = Flask(__name__)
+
+
+def _authorized():
+    """When CHAPAR_EXECUTOR_TOKEN is set, every execute call must carry it."""
+    token = os.environ.get("CHAPAR_EXECUTOR_TOKEN", "")
+    if not token:
+        return True
+    return hmac.compare_digest(request.headers.get(TOKEN_HEADER, ""), token)
 
 
 @app.route("/health")
 def health_check():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "version": VERSION, "api": API_VERSIONS})
+
+
+@app.route("/v2/execute", methods=["POST"])
+def execute_v2():
+    if not _authorized():
+        return jsonify({"message": "missing or wrong %s header" % TOKEN_HEADER}), 401
+    payload = request.get_json(silent=True)
+    try:
+        result = engine.execute(payload)
+    except engine.PayloadError as e:
+        return jsonify({"message": str(e)}), 400
+    return jsonify(result)
 
 
 @app.route("/execute", methods=["POST"])
-def execute_post_response():
-    try:
-        data = request.json
-        script = data.get("script", "")
-        request_data = data.get("requestData", {})
-        response_data = data.get("responseData", {})
-        environments = data.get("environments", {})
-
-        # Update chapar module environments
-        chapar._environments.clear()
-        chapar._set_environments.clear()
-        chapar.print_outputs.clear()
-        chapar._environments.update(environments)
-
-        # Create response object
-        response_obj = type("ResponseObject", (), {
-            "status_code": response_data.get("statusCode"),
-            "headers": response_data.get("headers", {}),
-            "text": response_data.get("body", ""),
-            "json": lambda self=None: json.loads(response_data.get("body", "{}")),
-        })()
-
-        # create request object
-        request_obj = type("RequestObject", (), {
-            "method": request_data.get("method", "GET"),
-            "url": request_data.get("url", ""),
-            "headers": request_data.get("headers", {}),
-            "metadata": request_data.get("metadata", {}),
-            "params": request_data.get("params", {}),
-            "query": request_data.get("query", {}),
-            "trailers": request_data.get("trailers", {}),
-            "data": request_data.get("data", {}),
-            "json": lambda self=None: request_data.get("json", {}),
-        })()
-
-        # Prepare execution environment
-        globals_dict = {
-            "__builtins__": __builtins__,
-            "chapar": chapar,  # Make chapar available in globals
-            "print": chapar.custom_print,
-            "request": request_obj,
-        }
-
-        locals_dict = {
-            "request": request_obj,
-            "response": response_obj,
-            "chapar": chapar,  # Also make it available in locals
-            "print": chapar.custom_print
-        }
-
-        # Reset any callbacks
-        chapar.on_response = None
-
-        # Execute the script
-        exec(script, globals_dict, locals_dict)
-
-        # If on_response was set, call it
-        if chapar.on_response is not None and callable(chapar.on_response):
-            chapar.on_response(response_obj)
-
-        # Return the potentially modified data
-        return jsonify({
-            "environments": chapar._environments,
-            "set_environments": chapar._set_environments,
-            "prints": chapar.print_outputs,
-        })
-
-
-    except Exception as e:
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 400
+def execute_v1():
+    """The original API: a post-request script with a flat request/response."""
+    if not _authorized():
+        return jsonify({"error": "missing or wrong %s header" % TOKEN_HEADER}), 401
+    data = request.get_json(silent=True) or {}
+    req = data.get("requestData") or {}
+    res = data.get("responseData") or {}
+    env = data.get("environments") or data.get("variables") or {}
+    payload = {
+        "phase": "post",
+        "protocol": "grpc" if req.get("metadata") else "http",
+        "script": data.get("script", ""),
+        "environment": {"vars": env},
+        "request": {
+            "url": req.get("url", ""),
+            "method": req.get("method", ""),
+            "headers": req.get("headers") or req.get("metadata") or {},
+            "body": req.get("body", ""),
+            "query": req.get("QueryParams") or req.get("query") or {},
+            "path_params": req.get("pathParams") or req.get("params") or {},
+        },
+        "response": {
+            "status_code": res.get("statusCode", 0),
+            "headers": res.get("headers") or {},
+            "body": res.get("body", ""),
+        },
+    }
+    result = engine.execute(payload)
+    if result["error"]:
+        err = result["error"]
+        return jsonify({"error": err["message"], "traceback": err["traceback"]}), 400
+    merged = dict(env)
+    merged.update(result["env_set"])
+    return jsonify({
+        "environments": merged,
+        "set_environments": result["env_set"],
+        "prints": result["prints"],
+    })
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int,
+    parser.add_argument("--port", type=int,
                         default=int(os.environ.get("PORT", 2397)),
-                        help='Port to run the server on')
-    parser.add_argument('--host',
-                        default=os.environ.get("HOST", "0.0.0.0"),
-                        help='Host to run the server on')
-    parser.add_argument('--debug', action='store_true',
-                        default=(os.environ.get("DEBUG", "").lower() == "true"),
-                        help='Run in debug mode')
+                        help="Port to run the server on")
+    parser.add_argument("--host",
+                        default=os.environ.get("HOST", "127.0.0.1"),
+                        help="Host to run the server on (it runs any code it is sent; keep it local)")
     args = parser.parse_args()
-    app.run(host=args.host, port=args.port, debug=False)
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)

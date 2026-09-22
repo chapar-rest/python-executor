@@ -11,11 +11,17 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code to the container
-COPY . .
+COPY main.py engine.py chapar_api.py ./
+
+# Scripts run as this user, never as root.
+RUN useradd --system --no-create-home --uid 10001 chapar
+USER 10001
 
 ENV PORT=2397
 ENV HOST=0.0.0.0
 ENV WORKERS=2
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Command to run the application
-CMD gunicorn --bind ${HOST}:${PORT} --workers ${WORKERS} --graceful-timeout 5 --timeout 5 main:app
+# A script is killed after its own timeout (at most 60s); the worker
+# timeout only has to outlast that.
+CMD gunicorn --bind ${HOST}:${PORT} --workers ${WORKERS} --graceful-timeout 5 --timeout 75 main:app
