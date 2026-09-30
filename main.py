@@ -12,7 +12,7 @@ from flask import Flask, jsonify, request
 
 import engine
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 API_VERSIONS = [1, 2]
 TOKEN_HEADER = "X-Chapar-Token"
 
