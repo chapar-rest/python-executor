@@ -101,6 +101,18 @@ class EngineTest(unittest.TestCase):
         ))
         self.assertEqual(r["request"], {"headers": [["auth", "new"]]})
 
+    def test_pre_response_is_explained(self):
+        r = engine.execute(payload(
+            "print(bool(response), response == None, chapar.response == None)\n"
+            "@chapar.test('status')\n"
+            "def _():\n    assert response.status_code == 0\n",
+            protocol="grpc",
+        ))
+        self.assertIsNone(r["error"])
+        self.assertEqual(r["prints"], ["False True True"])
+        self.assertFalse(r["tests"][0]["passed"])
+        self.assertIn("response.status_code is not available in a pre-request script", r["tests"][0]["error"])
+
     def test_graphql(self):
         r = engine.execute(payload(
             "request.graphql.variables['id'] = 2\n",

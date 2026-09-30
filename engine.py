@@ -98,7 +98,7 @@ def run(payload):
     env_data = payload.get("environment") or {}
     env = api.Env(env_data.get("name"), env_data.get("vars"))
     request = api.Request(protocol, payload.get("request"))
-    response = api.Response(protocol, payload.get("response")) if phase == "post" else None
+    response = api.Response(protocol, payload.get("response")) if phase == "post" else api.NO_RESPONSE
     ctx = api.Context(phase, protocol, request, response, env)
     mod = api.make_module(ctx, filename)
     api.install(mod)

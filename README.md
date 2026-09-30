@@ -15,7 +15,7 @@ Three names are defined in every script:
 | Name | What it is |
 |---|---|
 | `request` | The request. A pre-request script may change it. The changes apply to that one send, never to the saved request. |
-| `response` | The response in a post-request script. `None` in a pre-request script. |
+| `response` | The response in a post-request script. In a pre-request script it is a placeholder that is falsy and equals `None`; reading any attribute raises an error that says so. |
 | `chapar` | Environment, tests, logging and skipping. `import chapar` works too. |
 
 ```python

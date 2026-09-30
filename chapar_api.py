@@ -337,6 +337,35 @@ class Response:
         return "Response(%s %s)" % (self.status_code, self.status)
 
 
+class NoResponse:
+    """`response` in a pre-request script, before there is one. It is falsy and
+    equals None, and reading any attribute says why there is nothing there
+    instead of failing with "'NoneType' object has no attribute"."""
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        raise AttributeError(
+            "response.%s is not available in a pre-request script: the request has not "
+            "been sent yet. Read the response in a post-request script." % name
+        )
+
+    def __bool__(self):
+        return False
+
+    def __eq__(self, other):
+        return other is None or isinstance(other, NoResponse)
+
+    def __hash__(self):
+        return hash(None)
+
+    def __repr__(self):
+        return "NoResponse(pre-request script)"
+
+
+NO_RESPONSE = NoResponse()
+
+
 class Env:
     """The active environment. Values read are strings; values set may be any
     type and are stored as text (JSON for lists and dicts)."""
